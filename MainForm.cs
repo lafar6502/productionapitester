@@ -173,6 +173,11 @@ namespace ProductionApiTester
             AddColumn("PlannedEnd", "Planned End");
             AddColumn("RackId", "Rack");
             AddColumn("BatchId", "Batch");
+            AddColumn("ModelCode", "Model Code");
+            AddColumn("FabricCode", "Fabric Code");
+            AddColumn("SteeringCode", "Steering Code");
+            AddColumn("ProfileColor", "Profile Color");
+            AddColumn("Dimensions", "Dimensions");
 
             txtJson = new TextBox
             {
@@ -395,7 +400,13 @@ namespace ProductionApiTester
                     r.PlannedStart?.ToString("yyyy-MM-dd"),
                     r.PlannedEnd?.ToString("yyyy-MM-dd"),
                     r.RackId,
-                    r.BatchId
+                    r.BatchId,
+                    r.FabricCode,
+                    r.ModelCode,
+                    r.SteeringCode,
+                    r.Dimensions,
+                    r.ProductionSize,
+                    r.ProfileColor
                 );
             }
         }
