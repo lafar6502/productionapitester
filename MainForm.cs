@@ -6,6 +6,7 @@ using System.Linq;
 using System.Windows.Forms;
 using Configurator.Interfaces.Client;
 using Configurator.Interfaces.WebApi.Production;
+using System.Threading.Tasks;
 using Newtonsoft.Json;
 
 namespace ProductionApiTester
@@ -19,19 +20,22 @@ namespace ProductionApiTester
 
         // Query controls
         private ComboBox cboWorkCenter;
-        private ComboBox cboStatus;
         private TextBox txtOrderNo;
         private TextBox txtBatchId;
         private Button btnQuery;
         private Label lblStatus;
 
-        // Results
-        private DataGridView grid;
+        // Tabs & grids
+        private DataGridView gridAvailable;
+        private DataGridView gridStarted;
+        private Button btnStartWork;
+
+        // JSON preview
         private TextBox txtJson;
 
-        private List<ProductionOrderData> _results;
+        private List<ProductionOrderData> _resultsAvailable;
+        private List<ProductionOrderData> _resultsStarted;
 
-        // Debounce timer for connection field changes
         private Timer _reloadTimer;
 
         public MainForm()
@@ -39,7 +43,6 @@ namespace ProductionApiTester
             BuildUI();
             LoadSettings();
 
-            // Trigger initial work center load if URL is already set
             if (!string.IsNullOrWhiteSpace(txtUrl.Text))
                 ScheduleWorkCenterReload();
         }
@@ -56,14 +59,7 @@ namespace ProductionApiTester
 
             // ── Connection group ──────────────────────────────────────────
             var grpConn = new GroupBox { Text = "Connection", Dock = DockStyle.Top, Height = 60, Padding = new Padding(6, 2, 6, 2) };
-
-            var pnlConn = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                FlowDirection = FlowDirection.LeftToRight,
-                WrapContents = false,
-                AutoSize = true
-            };
+            var pnlConn = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, AutoSize = true };
 
             pnlConn.Controls.Add(new Label { Text = "URL:", AutoSize = true, Margin = new Padding(0, 6, 2, 0) });
             txtUrl = new TextBox { Width = 340, Margin = new Padding(0, 4, 10, 0) };
@@ -84,34 +80,11 @@ namespace ProductionApiTester
 
             // ── Query group ───────────────────────────────────────────────
             var grpQuery = new GroupBox { Text = "Query", Dock = DockStyle.Top, Height = 60, Padding = new Padding(6, 2, 6, 2) };
-
-            var pnlQuery = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                FlowDirection = FlowDirection.LeftToRight,
-                WrapContents = false,
-                AutoSize = true
-            };
+            var pnlQuery = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, AutoSize = true };
 
             pnlQuery.Controls.Add(new Label { Text = "Work Center:", AutoSize = true, Margin = new Padding(0, 6, 2, 0) });
-            cboWorkCenter = new ComboBox
-            {
-                DropDownStyle = ComboBoxStyle.DropDownList,
-                Width = 220,
-                Margin = new Padding(0, 4, 10, 0)
-            };
+            cboWorkCenter = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220, Margin = new Padding(0, 4, 10, 0) };
             pnlQuery.Controls.Add(cboWorkCenter);
-
-            pnlQuery.Controls.Add(new Label { Text = "Status:", AutoSize = true, Margin = new Padding(0, 6, 2, 0) });
-            cboStatus = new ComboBox
-            {
-                DropDownStyle = ComboBoxStyle.DropDownList,
-                Width = 120,
-                Margin = new Padding(0, 4, 10, 0)
-            };
-            cboStatus.Items.AddRange(new object[] { "Available", "Started", "Completed" });
-            cboStatus.SelectedIndex = 0;
-            pnlQuery.Controls.Add(cboStatus);
 
             pnlQuery.Controls.Add(new Label { Text = "Order No:", AutoSize = true, Margin = new Padding(0, 6, 2, 0) });
             txtOrderNo = new TextBox { Width = 120, Margin = new Padding(0, 4, 10, 0) };
@@ -128,24 +101,54 @@ namespace ProductionApiTester
             grpQuery.Controls.Add(pnlQuery);
 
             // ── Status label ──────────────────────────────────────────────
-            lblStatus = new Label
-            {
-                Dock = DockStyle.Top,
-                Height = 20,
-                ForeColor = Color.DimGray,
-                Text = "Ready.",
-                Padding = new Padding(4, 2, 0, 0)
-            };
+            lblStatus = new Label { Dock = DockStyle.Top, Height = 20, ForeColor = Color.DimGray, Text = "Ready.", Padding = new Padding(4, 2, 0, 0) };
 
-            // ── Splitter: grid (top) + JSON (bottom) ──────────────────────
-            var split = new SplitContainer
-            {
-                Dock = DockStyle.Fill,
-                Orientation = Orientation.Horizontal,
-                SplitterDistance = 420
-            };
+            // ── Splitter: tabs (top) + JSON (bottom) ──────────────────────
+            var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 420 };
 
-            grid = new DataGridView
+            // Available tab
+            gridAvailable = CreateGrid();
+            gridAvailable.SelectionChanged += OnAvailableSelectionChanged;
+
+            btnStartWork = new Button { Text = "Start Work", Height = 32, Dock = DockStyle.Bottom, Enabled = false };
+            btnStartWork.Click += OnStartWork;
+
+            var pnlAvailable = new Panel { Dock = DockStyle.Fill };
+            pnlAvailable.Controls.Add(btnStartWork);
+            pnlAvailable.Controls.Add(gridAvailable);
+
+            var tabAvailable = new TabPage { Text = "Available" };
+            tabAvailable.Controls.Add(pnlAvailable);
+
+            // Started tab
+            gridStarted = CreateGrid();
+            gridStarted.SelectionChanged += OnStartedSelectionChanged;
+
+            var tabStarted = new TabPage { Text = "Started" };
+            tabStarted.Controls.Add(gridStarted);
+
+            var tabs = new TabControl { Dock = DockStyle.Fill };
+            tabs.TabPages.Add(tabAvailable);
+            tabs.TabPages.Add(tabStarted);
+
+            split.Panel1.Controls.Add(tabs);
+
+            // JSON preview
+            txtJson = new TextBox { Dock = DockStyle.Fill, Multiline = true, ScrollBars = ScrollBars.Both, ReadOnly = true, Font = new Font("Consolas", 9f), WordWrap = false };
+            split.Panel2.Controls.Add(txtJson);
+
+            // ── Assemble form (controls added bottom-up for Dock=Top) ─────
+            Controls.Add(split);
+            Controls.Add(lblStatus);
+            Controls.Add(grpQuery);
+            Controls.Add(grpConn);
+
+            AcceptButton = btnQuery;
+        }
+
+        private DataGridView CreateGrid()
+        {
+            var g = new DataGridView
             {
                 Dock = DockStyle.Fill,
                 ReadOnly = true,
@@ -159,51 +162,34 @@ namespace ProductionApiTester
                 BackgroundColor = SystemColors.Window,
                 BorderStyle = BorderStyle.None
             };
-            grid.SelectionChanged += OnGridSelectionChanged;
-
-            AddColumn("Barcode", "Barcode");
-            AddColumn("ShortInfo", "Description");
-            AddColumn("ProductId", "Product ID");
-            AddColumn("ModelId", "Model");
-            AddColumn("Quantity", "Qty");
-            AddColumn("Status", "Status");
-            AddColumn("OrderNo", "Order No");
-            AddColumn("Customer", "Customer");
-            AddColumn("PlannedStart", "Planned Start");
-            AddColumn("PlannedEnd", "Planned End");
-            AddColumn("RackId", "Rack");
-            AddColumn("BatchId", "Batch");
-            AddColumn("ModelCode", "Model Code");
-            AddColumn("FabricCode", "Fabric Code");
-            AddColumn("SteeringCode", "Steering Code");
-            AddColumn("ProfileColor", "Profile Color");
-            AddColumn("Dimensions", "Dimensions");
-
-            txtJson = new TextBox
-            {
-                Dock = DockStyle.Fill,
-                Multiline = true,
-                ScrollBars = ScrollBars.Both,
-                ReadOnly = true,
-                Font = new Font("Consolas", 9f),
-                WordWrap = false
-            };
-
-            split.Panel1.Controls.Add(grid);
-            split.Panel2.Controls.Add(txtJson);
-
-            // ── Assemble form (controls added bottom-up for Dock=Top) ─────
-            Controls.Add(split);
-            Controls.Add(lblStatus);
-            Controls.Add(grpQuery);
-            Controls.Add(grpConn);
-
-            AcceptButton = btnQuery;
+            AddColumns(g);
+            return g;
         }
 
-        private void AddColumn(string name, string header)
+        private static void AddColumns(DataGridView g)
         {
-            grid.Columns.Add(new DataGridViewTextBoxColumn
+            AddCol(g, "Barcode",       "Barcode");
+            AddCol(g, "ShortInfo",     "Description");
+            AddCol(g, "ProductId",     "Product ID");
+            AddCol(g, "ModelId",       "Model");
+            AddCol(g, "Quantity",      "Qty");
+            AddCol(g, "Status",        "Status");
+            AddCol(g, "OrderNo",       "Order No");
+            AddCol(g, "Customer",      "Customer");
+            AddCol(g, "PlannedStart",  "Planned Start");
+            AddCol(g, "PlannedEnd",    "Planned End");
+            AddCol(g, "RackId",        "Rack");
+            AddCol(g, "BatchId",       "Batch");
+            AddCol(g, "ModelCode",     "Model Code");
+            AddCol(g, "FabricCode",    "Fabric Code");
+            AddCol(g, "SteeringCode",  "Steering Code");
+            AddCol(g, "ProfileColor",  "Profile Color");
+            AddCol(g, "Dimensions",    "Dimensions");
+        }
+
+        private static void AddCol(DataGridView g, string name, string header)
+        {
+            g.Columns.Add(new DataGridViewTextBoxColumn
             {
                 Name = name,
                 HeaderText = header,
@@ -214,18 +200,17 @@ namespace ProductionApiTester
 
         private void LoadSettings()
         {
-            txtUrl.Text = ConfigurationManager.AppSettings["Url"] ?? "http://localhost:8486/";
+            txtUrl.Text  = ConfigurationManager.AppSettings["Url"]  ?? "http://localhost:8486/";
             txtUser.Text = ConfigurationManager.AppSettings["User"] ?? "";
             txtPass.Text = ConfigurationManager.AppSettings["Pass"] ?? "";
-            // saved work center name — will be re-selected after the list loads
             cboWorkCenter.Tag = ConfigurationManager.AppSettings["WorkCenter"] ?? "";
         }
 
         private void SaveSettings()
         {
             var cfg = ConfigurationManager.OpenExeConfiguration(ConfigurationUserLevel.None);
-            SetOrAdd(cfg, "Url", txtUrl.Text);
-            SetOrAdd(cfg, "User", txtUser.Text);
+            SetOrAdd(cfg, "Url",        txtUrl.Text);
+            SetOrAdd(cfg, "User",       txtUser.Text);
             SetOrAdd(cfg, "WorkCenter", cboWorkCenter.SelectedItem?.ToString() ?? "");
             // intentionally not saving password
             cfg.Save(ConfigurationSaveMode.Modified);
@@ -242,10 +227,7 @@ namespace ProductionApiTester
 
         // ── Work center loading ───────────────────────────────────────────
 
-        private void OnConnectionFieldChanged(object sender, EventArgs e)
-        {
-            ScheduleWorkCenterReload();
-        }
+        private void OnConnectionFieldChanged(object sender, EventArgs e) => ScheduleWorkCenterReload();
 
         private void ScheduleWorkCenterReload()
         {
@@ -266,7 +248,7 @@ namespace ProductionApiTester
             lblStatus.Text = "Loading work centers...";
             lblStatus.ForeColor = Color.DimGray;
 
-            System.Threading.Tasks.Task.Run(() =>
+            Task.Run(() =>
             {
                 try
                 {
@@ -283,7 +265,6 @@ namespace ProductionApiTester
                         foreach (var n in names)
                             cboWorkCenter.Items.Add(n);
 
-                        // Restore previous selection if still present
                         if (!string.IsNullOrEmpty(previousSelection))
                         {
                             var idx = cboWorkCenter.FindStringExact(previousSelection);
@@ -294,7 +275,7 @@ namespace ProductionApiTester
                             cboWorkCenter.SelectedIndex = 0;
                         }
 
-                        cboWorkCenter.Tag = null; // clear the startup hint
+                        cboWorkCenter.Tag = null;
                         cboWorkCenter.Enabled = true;
                         lblStatus.Text = $"Loaded {names.Count} work center(s).";
                         lblStatus.ForeColor = Color.DarkGreen;
@@ -328,67 +309,71 @@ namespace ProductionApiTester
             }
 
             btnQuery.Enabled = false;
+            btnStartWork.Enabled = false;
             lblStatus.Text = "Querying...";
             lblStatus.ForeColor = Color.DimGray;
-            grid.Rows.Clear();
+            gridAvailable.Rows.Clear();
+            gridStarted.Rows.Clear();
             txtJson.Clear();
 
             SaveSettings();
 
-            var url = txtUrl.Text.Trim();
-            var user = txtUser.Text.Trim();
-            var pass = txtPass.Text;
+            var url        = txtUrl.Text.Trim();
+            var user       = txtUser.Text.Trim();
+            var pass       = txtPass.Text;
             var workCenter = cboWorkCenter.SelectedItem.ToString();
-            var status = (WorkStatus)cboStatus.SelectedIndex;
-            var orderNo = txtOrderNo.Text.Trim();
-            int? batchId = null;
+            var orderNo    = txtOrderNo.Text.Trim();
+            int? batchId   = null;
             if (!string.IsNullOrWhiteSpace(txtBatchId.Text) && int.TryParse(txtBatchId.Text.Trim(), out int bid))
                 batchId = bid;
 
-            System.Threading.Tasks.Task.Run(() =>
+            QueryProductionOrdersForWorkCenter MakeMsg(WorkStatus status) => new QueryProductionOrdersForWorkCenter
             {
-                try
+                WorkCenter = workCenter,
+                Status     = status,
+                OrderNo    = string.IsNullOrEmpty(orderNo) ? null : orderNo,
+                BatchId    = batchId
+            };
+
+            var taskAvailable = Task.Run(() =>
+                new ConfiguratorClient { BaseUrl = url, UserName = user, Password = pass }
+                    .QueryProductionOrdersForWorkCenter(MakeMsg(WorkStatus.Available)).ToList());
+
+            var taskStarted = Task.Run(() =>
+                new ConfiguratorClient { BaseUrl = url, UserName = user, Password = pass }
+                    .QueryProductionOrdersForWorkCenter(MakeMsg(WorkStatus.Started)).ToList());
+
+            Task.WhenAll(taskAvailable, taskStarted).ContinueWith(_ =>
+            {
+                Invoke((Action)(() =>
                 {
-                    var cc = new ConfiguratorClient { BaseUrl = url, UserName = user, Password = pass };
-
-                    var msg = new QueryProductionOrdersForWorkCenter
+                    if (taskAvailable.IsFaulted || taskStarted.IsFaulted)
                     {
-                        WorkCenter = workCenter,
-                        Status = status,
-                        OrderNo = string.IsNullOrEmpty(orderNo) ? null : orderNo,
-                        BatchId = batchId
-                    };
-
-                    var results = cc.QueryProductionOrdersForWorkCenter(msg).ToList();
-
-                    Invoke((Action)(() =>
-                    {
-                        _results = results;
-                        PopulateGrid(results);
-                        lblStatus.Text = $"{results.Count} result(s) returned.";
-                        lblStatus.ForeColor = Color.DarkGreen;
-                        btnQuery.Enabled = true;
-                    }));
-                }
-                catch (Exception ex)
-                {
-                    Invoke((Action)(() =>
-                    {
+                        var ex = (taskAvailable.Exception ?? taskStarted.Exception).InnerException;
                         lblStatus.Text = "Error: " + ex.Message;
                         lblStatus.ForeColor = Color.Red;
                         txtJson.Text = ex.ToString();
-                        btnQuery.Enabled = true;
-                    }));
-                }
+                    }
+                    else
+                    {
+                        _resultsAvailable = taskAvailable.Result;
+                        _resultsStarted   = taskStarted.Result;
+                        PopulateGrid(gridAvailable, _resultsAvailable);
+                        PopulateGrid(gridStarted,   _resultsStarted);
+                        lblStatus.Text = $"{_resultsAvailable.Count} available, {_resultsStarted.Count} started.";
+                        lblStatus.ForeColor = Color.DarkGreen;
+                    }
+                    btnQuery.Enabled = true;
+                }));
             });
         }
 
-        private void PopulateGrid(List<ProductionOrderData> results)
+        private static void PopulateGrid(DataGridView g, List<ProductionOrderData> results)
         {
-            grid.Rows.Clear();
+            g.Rows.Clear();
             foreach (var r in results)
             {
-                grid.Rows.Add(
+                g.Rows.Add(
                     r.Barcode,
                     r.ShortInfo,
                     r.ProductId,
@@ -401,33 +386,49 @@ namespace ProductionApiTester
                     r.PlannedEnd?.ToString("yyyy-MM-dd"),
                     r.RackId,
                     r.BatchId,
-                    r.FabricCode,
                     r.ModelCode,
+                    r.FabricCode,
                     r.SteeringCode,
-                    r.Dimensions,
-                    r.ProductionSize,
-                    r.ProfileColor
+                    r.ProfileColor,
+                    r.Dimensions
                 );
             }
         }
 
-        private void OnGridSelectionChanged(object sender, EventArgs e)
+        private void OnAvailableSelectionChanged(object sender, EventArgs e)
         {
-            if (_results == null || grid.SelectedRows.Count == 0)
-            {
-                txtJson.Clear();
-                return;
-            }
+            ShowJson(gridAvailable, _resultsAvailable);
+            btnStartWork.Enabled = gridAvailable.SelectedRows.Count > 0;
+        }
 
-            var idx = grid.SelectedRows[0].Index;
-            if (idx < 0 || idx >= _results.Count) return;
+        private void OnStartedSelectionChanged(object sender, EventArgs e)
+        {
+            ShowJson(gridStarted, _resultsStarted);
+        }
 
-            var item = _results[idx];
-            txtJson.Text = JsonConvert.SerializeObject(item, Formatting.Indented, new JsonSerializerSettings
+        private void ShowJson(DataGridView g, List<ProductionOrderData> results)
+        {
+            if (results == null || g.SelectedRows.Count == 0) { txtJson.Clear(); return; }
+            var idx = g.SelectedRows[0].Index;
+            if (idx < 0 || idx >= results.Count) return;
+            txtJson.Text = JsonConvert.SerializeObject(results[idx], Formatting.Indented, new JsonSerializerSettings
             {
                 NullValueHandling = NullValueHandling.Ignore,
                 Converters = { new Newtonsoft.Json.Converters.StringEnumConverter() }
             });
+        }
+
+        // ── Start Work ────────────────────────────────────────────────────
+
+        private void OnStartWork(object sender, EventArgs e)
+        {
+            if (_resultsAvailable == null || gridAvailable.SelectedRows.Count == 0) return;
+            var idx = gridAvailable.SelectedRows[0].Index;
+            if (idx < 0 || idx >= _resultsAvailable.Count) return;
+            var item = _resultsAvailable[idx];
+
+            // TODO: call the start-work API with item
+            MessageBox.Show($"Start work: {item.Barcode}", "Start Work", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
     }
 }
