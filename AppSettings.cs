@@ -10,6 +10,7 @@ namespace ProductionApiTester
         public static readonly (string Name, string Header)[] AllColumns =
         {
             ("Barcode",      "Barcode"),
+            ("LRef",      "LRef"),
             ("ShortInfo",    "Description"),
             ("ProductId",    "Product ID"),
             ("ModelId",      "Model"),

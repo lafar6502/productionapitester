@@ -13,13 +13,17 @@ namespace ProductionApiTester
     public class MainForm : Form
     {
         private AppSettings _settings;
+        private string _pass = "";
 
-        // Query controls
+        // Work center bar (above tabs)
         private ComboBox cboWorkCenter;
+        private Button btnRefresh;
+        private Label lblStatus;
+
+        // Available tab filter controls
         private TextBox txtOrderNo;
         private TextBox txtBatchId;
-        private Button btnQuery;
-        private Label lblStatus;
+        private Button btnQueryAvailable;
 
         // Tabs & grids
         private DataGridView gridAvailable;
@@ -32,12 +36,12 @@ namespace ProductionApiTester
         private List<ProductionOrderData> _resultsAvailable;
         private List<ProductionOrderData> _resultsStarted;
 
-        // Maps column name → value getter; used by PopulateGrid
         private static readonly Dictionary<string, Func<ProductionOrderData, object>> _getters =
             new Dictionary<string, Func<ProductionOrderData, object>>
             {
                 ["Barcode"]      = r => r.Barcode,
                 ["ShortInfo"]    = r => r.ShortInfo,
+                ["LRef"]         = r => r.LRef,
                 ["ProductId"]    = r => r.ProductId,
                 ["ModelId"]      = r => r.ModelId,
                 ["Quantity"]     = r => r.Quantity,
@@ -61,6 +65,9 @@ namespace ProductionApiTester
             _settings = AppSettings.Load();
             cboWorkCenter.Tag = _settings.WorkCenter;
 
+            ApplyColumnSettings(gridAvailable);
+            ApplyColumnSettings(gridStarted);
+
             if (!string.IsNullOrWhiteSpace(_settings.Url))
                 LoadWorkCenters();
         }
@@ -72,45 +79,31 @@ namespace ProductionApiTester
             MinimumSize = new Size(800, 600);
             Font        = new Font("Segoe UI", 9f);
 
-            // ── Menu ──────────────────────────────────────────────────────
-            var menuStrip    = new MenuStrip();
-            var menuFile     = new ToolStripMenuItem("File");
-            var menuView     = new ToolStripMenuItem("View");
-            var menuSettings = new ToolStripMenuItem("Connection Settings...", null, OnConnectionSettings);
-            var menuExit     = new ToolStripMenuItem("Exit", null, (s, e) => Close());
-            var menuColumns  = new ToolStripMenuItem("Columns...", null, OnColumnSettings);
-
-            menuFile.DropDownItems.Add(menuSettings);
+            // ── Menu ─────────────────────────────────────────────────────
+            var menuStrip   = new MenuStrip();
+            var menuFile    = new ToolStripMenuItem("File");
+            var menuView    = new ToolStripMenuItem("View");
+            menuFile.DropDownItems.Add(new ToolStripMenuItem("Connection Settings...", null, OnConnectionSettings));
             menuFile.DropDownItems.Add(new ToolStripSeparator());
-            menuFile.DropDownItems.Add(menuExit);
-
-            menuView.DropDownItems.Add(menuColumns);
-
+            menuFile.DropDownItems.Add(new ToolStripMenuItem("Exit", null, (s, e) => Close()));
+            menuView.DropDownItems.Add(new ToolStripMenuItem("Columns...", null, OnColumnSettings));
             menuStrip.Items.Add(menuFile);
             menuStrip.Items.Add(menuView);
             MainMenuStrip = menuStrip;
 
-            // ── Query group ───────────────────────────────────────────────
-            var grpQuery = new GroupBox { Text = "Query", Dock = DockStyle.Top, Height = 60, Padding = new Padding(6, 2, 6, 2) };
-            var pnlQuery = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, AutoSize = true };
+            // ── Work center bar ───────────────────────────────────────────
+            var grpWc  = new GroupBox { Text = "Work Center", Dock = DockStyle.Top, Height = 60, Padding = new Padding(6, 2, 6, 2) };
+            var pnlWc  = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, AutoSize = true };
 
-            pnlQuery.Controls.Add(new Label { Text = "Work Center:", AutoSize = true, Margin = new Padding(0, 6, 2, 0) });
-            cboWorkCenter = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220, Margin = new Padding(0, 4, 10, 0) };
-            pnlQuery.Controls.Add(cboWorkCenter);
+            cboWorkCenter = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260, Margin = new Padding(0, 4, 10, 0) };
+            cboWorkCenter.SelectedIndexChanged += OnWorkCenterSelectionChanged;
+            pnlWc.Controls.Add(cboWorkCenter);
 
-            pnlQuery.Controls.Add(new Label { Text = "Order No:", AutoSize = true, Margin = new Padding(0, 6, 2, 0) });
-            txtOrderNo = new TextBox { Width = 120, Margin = new Padding(0, 4, 10, 0) };
-            pnlQuery.Controls.Add(txtOrderNo);
+            btnRefresh = new Button { Text = "Refresh", Width = 80, Height = 26, Margin = new Padding(0, 3, 0, 0) };
+            btnRefresh.Click += OnRefresh;
+            pnlWc.Controls.Add(btnRefresh);
 
-            pnlQuery.Controls.Add(new Label { Text = "Batch ID:", AutoSize = true, Margin = new Padding(0, 6, 2, 0) });
-            txtBatchId = new TextBox { Width = 80, Margin = new Padding(0, 4, 10, 0) };
-            pnlQuery.Controls.Add(txtBatchId);
-
-            btnQuery = new Button { Text = "Query", Width = 80, Height = 26, Margin = new Padding(0, 3, 0, 0) };
-            btnQuery.Click += OnQuery;
-            pnlQuery.Controls.Add(btnQuery);
-
-            grpQuery.Controls.Add(pnlQuery);
+            grpWc.Controls.Add(pnlWc);
 
             // ── Status label ──────────────────────────────────────────────
             lblStatus = new Label { Dock = DockStyle.Top, Height = 20, ForeColor = Color.DimGray, Text = "Ready.", Padding = new Padding(4, 2, 0, 0) };
@@ -118,7 +111,25 @@ namespace ProductionApiTester
             // ── Splitter: tabs (top) + JSON (bottom) ──────────────────────
             var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 420 };
 
-            // Available tab
+            // ── Available tab ─────────────────────────────────────────────
+            var pnlFilter = new FlowLayoutPanel
+            {
+                Dock          = DockStyle.Top,
+                Height        = 36,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents  = false,
+                Padding       = new Padding(4, 4, 0, 0)
+            };
+            pnlFilter.Controls.Add(new Label { Text = "Order No:", AutoSize = true, Margin = new Padding(0, 4, 2, 0) });
+            txtOrderNo = new TextBox { Width = 120, Margin = new Padding(0, 2, 10, 0) };
+            pnlFilter.Controls.Add(txtOrderNo);
+            pnlFilter.Controls.Add(new Label { Text = "Batch ID:", AutoSize = true, Margin = new Padding(0, 4, 2, 0) });
+            txtBatchId = new TextBox { Width = 80, Margin = new Padding(0, 2, 10, 0) };
+            pnlFilter.Controls.Add(txtBatchId);
+            btnQueryAvailable = new Button { Text = "Query", Width = 80, Height = 26, Margin = new Padding(0, 1, 0, 0) };
+            btnQueryAvailable.Click += OnQueryAvailable;
+            pnlFilter.Controls.Add(btnQueryAvailable);
+
             gridAvailable = CreateGrid();
             gridAvailable.SelectionChanged += OnAvailableSelectionChanged;
 
@@ -126,13 +137,14 @@ namespace ProductionApiTester
             btnStartWork.Click += OnStartWork;
 
             var pnlAvailable = new Panel { Dock = DockStyle.Fill };
-            pnlAvailable.Controls.Add(btnStartWork);
-            pnlAvailable.Controls.Add(gridAvailable);
+            pnlAvailable.Controls.Add(gridAvailable);  // Fill
+            pnlAvailable.Controls.Add(btnStartWork);   // Bottom
+            pnlAvailable.Controls.Add(pnlFilter);      // Top (added last → sits at top)
 
             var tabAvailable = new TabPage { Text = "Available" };
             tabAvailable.Controls.Add(pnlAvailable);
 
-            // Started tab
+            // ── Started tab ───────────────────────────────────────────────
             gridStarted = CreateGrid();
             gridStarted.SelectionChanged += OnStartedSelectionChanged;
 
@@ -142,20 +154,19 @@ namespace ProductionApiTester
             var tabs = new TabControl { Dock = DockStyle.Fill };
             tabs.TabPages.Add(tabAvailable);
             tabs.TabPages.Add(tabStarted);
-
             split.Panel1.Controls.Add(tabs);
 
-            // JSON preview
+            // ── JSON preview ──────────────────────────────────────────────
             txtJson = new TextBox { Dock = DockStyle.Fill, Multiline = true, ScrollBars = ScrollBars.Both, ReadOnly = true, Font = new Font("Consolas", 9f), WordWrap = false };
             split.Panel2.Controls.Add(txtJson);
 
-            // ── Assemble form (controls added bottom-up for Dock=Top) ─────
+            // ── Assemble form (bottom-up for Dock=Top) ────────────────────
             Controls.Add(split);
             Controls.Add(lblStatus);
-            Controls.Add(grpQuery);
+            Controls.Add(grpWc);
             Controls.Add(menuStrip);
 
-            AcceptButton = btnQuery;
+            AcceptButton = btnQueryAvailable;
         }
 
         private DataGridView CreateGrid()
@@ -177,10 +188,9 @@ namespace ProductionApiTester
             return g;
         }
 
-        // Rebuild the columns on a grid according to current settings
         private void ApplyColumnSettings(DataGridView g)
         {
-            var visible = _settings.VisibleColumns
+            var visible = _settings?.VisibleColumns
                 ?? AppSettings.AllColumns.Select(c => c.Name).ToList();
 
             g.Columns.Clear();
@@ -212,15 +222,11 @@ namespace ProductionApiTester
                 if (dlg.ShowDialog(this) != DialogResult.OK) return;
                 _settings.Url  = dlg.Url;
                 _settings.User = dlg.UserName;
-                // Store password only in memory; never persisted
-                _pass = dlg.Password;
+                _pass          = dlg.Password;
                 _settings.Save();
                 LoadWorkCenters();
             }
         }
-
-        // Password lives in memory only — not serialised to disk
-        private string _pass = "";
 
         private void OnColumnSettings(object sender, EventArgs e)
         {
@@ -249,64 +255,77 @@ namespace ProductionApiTester
             var pass = _pass;
             var previousSelection = cboWorkCenter.SelectedItem?.ToString() ?? cboWorkCenter.Tag?.ToString() ?? "";
 
-            // Apply column settings now that _settings is ready
-            ApplyColumnSettings(gridAvailable);
-            ApplyColumnSettings(gridStarted);
-
-            cboWorkCenter.Enabled = false;
-            lblStatus.Text        = "Loading work centers...";
-            lblStatus.ForeColor   = Color.DimGray;
+            SetQueryingState(true);
+            lblStatus.Text = "Loading work centers...";
 
             Task.Run(() =>
             {
                 try
                 {
-                    var cc   = new ConfiguratorClient { BaseUrl = url, UserName = user, Password = pass };
-                    var data = cc.GetProductionConfigurationData();
+                    var cc    = new ConfiguratorClient { BaseUrl = url, UserName = user, Password = pass };
+                    var data  = cc.GetProductionConfigurationData();
                     var names = (data.WorkCenters ?? Enumerable.Empty<WorkCenterInfo>())
-                        .Select(w => w.Name)
-                        .OrderBy(n => n)
-                        .ToList();
+                        .Select(w => w.Name).OrderBy(n => n).ToList();
 
                     Invoke((Action)(() =>
                     {
+                        // Suppress SelectedIndexChanged during list rebuild
+                        cboWorkCenter.SelectedIndexChanged -= OnWorkCenterSelectionChanged;
                         cboWorkCenter.Items.Clear();
-                        foreach (var n in names)
-                            cboWorkCenter.Items.Add(n);
+                        foreach (var n in names) cboWorkCenter.Items.Add(n);
 
                         if (!string.IsNullOrEmpty(previousSelection))
                         {
                             var idx = cboWorkCenter.FindStringExact(previousSelection);
-                            cboWorkCenter.SelectedIndex = idx >= 0 ? idx : (cboWorkCenter.Items.Count > 0 ? 0 : -1);
+                            cboWorkCenter.SelectedIndex = idx >= 0 ? idx : (names.Count > 0 ? 0 : -1);
                         }
-                        else if (cboWorkCenter.Items.Count > 0)
+                        else if (names.Count > 0)
                         {
                             cboWorkCenter.SelectedIndex = 0;
                         }
 
-                        cboWorkCenter.Tag     = null;
-                        cboWorkCenter.Enabled = true;
-                        lblStatus.Text        = $"Loaded {names.Count} work center(s).";
-                        lblStatus.ForeColor   = Color.DarkGreen;
+                        cboWorkCenter.Tag = null;
+                        cboWorkCenter.SelectedIndexChanged += OnWorkCenterSelectionChanged;
+
+                        SetQueryingState(false);
+                        lblStatus.Text      = $"Loaded {names.Count} work center(s).";
+                        lblStatus.ForeColor = Color.DarkGreen;
+
+                        // Auto-query both tabs after loading work centers
+                        if (cboWorkCenter.SelectedItem != null)
+                            ExecuteBothQueries();
                     }));
                 }
                 catch (Exception ex)
                 {
                     Invoke((Action)(() =>
                     {
-                        cboWorkCenter.Enabled = true;
-                        lblStatus.Text        = "Could not load work centers: " + ex.Message;
-                        lblStatus.ForeColor   = Color.OrangeRed;
+                        cboWorkCenter.SelectedIndexChanged += OnWorkCenterSelectionChanged;
+                        SetQueryingState(false);
+                        lblStatus.Text      = "Could not load work centers: " + ex.Message;
+                        lblStatus.ForeColor = Color.OrangeRed;
                     }));
                 }
             });
         }
 
-        // ── Query ─────────────────────────────────────────────────────────
+        // ── Query orchestration ───────────────────────────────────────────
 
-        private void OnQuery(object sender, EventArgs e)
+        private void OnWorkCenterSelectionChanged(object sender, EventArgs e)
         {
-            if (string.IsNullOrWhiteSpace(_settings.Url))
+            if (cboWorkCenter.SelectedItem == null || string.IsNullOrWhiteSpace(_settings?.Url)) return;
+            ExecuteBothQueries();
+        }
+
+        private void OnRefresh(object sender, EventArgs e)
+        {
+            if (cboWorkCenter.SelectedItem == null) return;
+            ExecuteBothQueries();
+        }
+
+        private void OnQueryAvailable(object sender, EventArgs e)
+        {
+            if (string.IsNullOrWhiteSpace(_settings?.Url))
             {
                 MessageBox.Show("Please configure the connection first (File > Connection Settings).", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
@@ -316,48 +335,51 @@ namespace ProductionApiTester
                 MessageBox.Show("Please select a Work Center.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
+            ExecuteAvailableQuery();
+        }
 
-            btnQuery.Enabled      = false;
-            btnStartWork.Enabled  = false;
-            lblStatus.Text        = "Querying...";
-            lblStatus.ForeColor   = Color.DimGray;
+        private void ExecuteBothQueries()
+        {
+            _settings.WorkCenter = cboWorkCenter.SelectedItem.ToString();
+            _settings.Save();
+
+            SetQueryingState(true);
             gridAvailable.Rows.Clear();
             gridStarted.Rows.Clear();
             txtJson.Clear();
-
-            // Persist selected work center
-            _settings.WorkCenter = cboWorkCenter.SelectedItem.ToString();
-            _settings.Save();
+            lblStatus.Text      = "Querying...";
+            lblStatus.ForeColor = Color.DimGray;
 
             var url        = _settings.Url;
             var user       = _settings.User;
             var pass       = _pass;
             var workCenter = _settings.WorkCenter;
             var orderNo    = txtOrderNo.Text.Trim();
-            int? batchId   = null;
-            if (!string.IsNullOrWhiteSpace(txtBatchId.Text) && int.TryParse(txtBatchId.Text.Trim(), out int bid))
-                batchId = bid;
-
-            QueryProductionOrdersForWorkCenter MakeMsg(WorkStatus status) => new QueryProductionOrdersForWorkCenter
-            {
-                WorkCenter = workCenter,
-                Status     = status,
-                OrderNo    = string.IsNullOrEmpty(orderNo) ? null : orderNo,
-                BatchId    = batchId
-            };
+            var batchId    = GetBatchId();
 
             var taskAvailable = Task.Run(() =>
                 new ConfiguratorClient { BaseUrl = url, UserName = user, Password = pass }
-                    .QueryProductionOrdersForWorkCenter(MakeMsg(WorkStatus.Available)).ToList());
+                    .QueryProductionOrdersForWorkCenter(new QueryProductionOrdersForWorkCenter
+                    {
+                        WorkCenter = workCenter,
+                        Status     = WorkStatus.Available,
+                        OrderNo    = string.IsNullOrEmpty(orderNo) ? null : orderNo,
+                        BatchId    = batchId
+                    }).ToList());
 
             var taskStarted = Task.Run(() =>
                 new ConfiguratorClient { BaseUrl = url, UserName = user, Password = pass }
-                    .QueryProductionOrdersForWorkCenter(MakeMsg(WorkStatus.Started)).ToList());
+                    .QueryProductionOrdersForWorkCenter(new QueryProductionOrdersForWorkCenter
+                    {
+                        WorkCenter = workCenter,
+                        Status     = WorkStatus.Started
+                    }).ToList());
 
             Task.WhenAll(taskAvailable, taskStarted).ContinueWith(_ =>
             {
                 Invoke((Action)(() =>
                 {
+                    SetQueryingState(false);
                     if (taskAvailable.IsFaulted || taskStarted.IsFaulted)
                     {
                         var ex = (taskAvailable.Exception ?? taskStarted.Exception).InnerException;
@@ -374,10 +396,72 @@ namespace ProductionApiTester
                         lblStatus.Text      = $"{_resultsAvailable.Count} available, {_resultsStarted.Count} started.";
                         lblStatus.ForeColor = Color.DarkGreen;
                     }
-                    btnQuery.Enabled = true;
                 }));
             });
         }
+
+        private void ExecuteAvailableQuery()
+        {
+            btnQueryAvailable.Enabled = false;
+            gridAvailable.Rows.Clear();
+            txtJson.Clear();
+            lblStatus.Text      = "Querying available orders...";
+            lblStatus.ForeColor = Color.DimGray;
+
+            var url        = _settings.Url;
+            var user       = _settings.User;
+            var pass       = _pass;
+            var workCenter = cboWorkCenter.SelectedItem.ToString();
+            var orderNo    = txtOrderNo.Text.Trim();
+            var batchId    = GetBatchId();
+
+            Task.Run(() =>
+                new ConfiguratorClient { BaseUrl = url, UserName = user, Password = pass }
+                    .QueryProductionOrdersForWorkCenter(new QueryProductionOrdersForWorkCenter
+                    {
+                        WorkCenter = workCenter,
+                        Status     = WorkStatus.Available,
+                        OrderNo    = string.IsNullOrEmpty(orderNo) ? null : orderNo,
+                        BatchId    = batchId
+                    }).ToList()
+            ).ContinueWith(t =>
+            {
+                Invoke((Action)(() =>
+                {
+                    btnQueryAvailable.Enabled = true;
+                    if (t.IsFaulted)
+                    {
+                        var ex = t.Exception.InnerException;
+                        lblStatus.Text      = "Error: " + ex.Message;
+                        lblStatus.ForeColor = Color.Red;
+                        txtJson.Text        = ex.ToString();
+                    }
+                    else
+                    {
+                        _resultsAvailable = t.Result;
+                        PopulateGrid(gridAvailable, _resultsAvailable);
+                        lblStatus.Text      = $"{_resultsAvailable.Count} available, {_resultsStarted?.Count ?? 0} started.";
+                        lblStatus.ForeColor = Color.DarkGreen;
+                    }
+                }));
+            });
+        }
+
+        private int? GetBatchId()
+        {
+            if (!string.IsNullOrWhiteSpace(txtBatchId.Text) && int.TryParse(txtBatchId.Text.Trim(), out int bid))
+                return bid;
+            return null;
+        }
+
+        private void SetQueryingState(bool querying)
+        {
+            cboWorkCenter.Enabled     = !querying;
+            btnRefresh.Enabled        = !querying;
+            btnQueryAvailable.Enabled = !querying;
+        }
+
+        // ── Grid population ───────────────────────────────────────────────
 
         private static void PopulateGrid(DataGridView g, List<ProductionOrderData> results)
         {
