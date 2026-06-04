@@ -31,10 +31,14 @@ namespace ProductionApiTester
 
         public string Url { get; set; } = "http://localhost:8486/";
         public string User { get; set; } = "";
+        public string Password { get; set; } = "";
         public string WorkCenter { get; set; } = "";
 
         // Ordered list of visible column names. Null = all columns in default order.
         public List<string> VisibleColumns { get; set; }
+
+        // Saved column widths keyed by column name.
+        public Dictionary<string, int> ColumnWidths { get; set; } = new Dictionary<string, int>();
 
         private static readonly string FilePath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),

@@ -13,11 +13,10 @@ namespace ProductionApiTester
     public class MainForm : Form
     {
         private AppSettings _settings;
-        private string _pass = "";
 
-        // Work center bar (above tabs)
-        private ComboBox cboWorkCenter;
-        private Button btnRefresh;
+        // Dynamic work center menu
+        private ToolStripMenuItem _menuWorkCenter;
+
         private Label lblStatus;
 
         // Available tab filter controls
@@ -40,8 +39,8 @@ namespace ProductionApiTester
             new Dictionary<string, Func<ProductionOrderData, object>>
             {
                 ["Barcode"]      = r => r.Barcode,
-                ["ShortInfo"]    = r => r.ShortInfo,
                 ["LRef"]         = r => r.LRef,
+                ["ShortInfo"]    = r => r.ShortInfo,
                 ["ProductId"]    = r => r.ProductId,
                 ["ModelId"]      = r => r.ModelId,
                 ["Quantity"]     = r => r.Quantity,
@@ -63,7 +62,6 @@ namespace ProductionApiTester
         {
             BuildUI();
             _settings = AppSettings.Load();
-            cboWorkCenter.Tag = _settings.WorkCenter;
 
             ApplyColumnSettings(gridAvailable);
             ApplyColumnSettings(gridStarted);
@@ -80,30 +78,24 @@ namespace ProductionApiTester
             Font        = new Font("Segoe UI", 9f);
 
             // ── Menu ─────────────────────────────────────────────────────
-            var menuStrip   = new MenuStrip();
-            var menuFile    = new ToolStripMenuItem("File");
-            var menuView    = new ToolStripMenuItem("View");
+            var menuStrip  = new MenuStrip();
+            var menuFile   = new ToolStripMenuItem("File");
+            var menuView   = new ToolStripMenuItem("View");
+            _menuWorkCenter = new ToolStripMenuItem("Work Center");
+
             menuFile.DropDownItems.Add(new ToolStripMenuItem("Connection Settings...", null, OnConnectionSettings));
             menuFile.DropDownItems.Add(new ToolStripSeparator());
             menuFile.DropDownItems.Add(new ToolStripMenuItem("Exit", null, (s, e) => Close()));
+
             menuView.DropDownItems.Add(new ToolStripMenuItem("Columns...", null, OnColumnSettings));
+
+            // Work Center menu is populated dynamically in LoadWorkCenters
+            _menuWorkCenter.DropDownItems.Add(new ToolStripMenuItem("Refresh", null, OnRefresh));
+
             menuStrip.Items.Add(menuFile);
+            menuStrip.Items.Add(_menuWorkCenter);
             menuStrip.Items.Add(menuView);
             MainMenuStrip = menuStrip;
-
-            // ── Work center bar ───────────────────────────────────────────
-            var grpWc  = new GroupBox { Text = "Work Center", Dock = DockStyle.Top, Height = 60, Padding = new Padding(6, 2, 6, 2) };
-            var pnlWc  = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, AutoSize = true };
-
-            cboWorkCenter = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260, Margin = new Padding(0, 4, 10, 0) };
-            cboWorkCenter.SelectedIndexChanged += OnWorkCenterSelectionChanged;
-            pnlWc.Controls.Add(cboWorkCenter);
-
-            btnRefresh = new Button { Text = "Refresh", Width = 80, Height = 26, Margin = new Padding(0, 3, 0, 0) };
-            btnRefresh.Click += OnRefresh;
-            pnlWc.Controls.Add(btnRefresh);
-
-            grpWc.Controls.Add(pnlWc);
 
             // ── Status label ──────────────────────────────────────────────
             lblStatus = new Label { Dock = DockStyle.Top, Height = 20, ForeColor = Color.DimGray, Text = "Ready.", Padding = new Padding(4, 2, 0, 0) };
@@ -163,7 +155,6 @@ namespace ProductionApiTester
             // ── Assemble form (bottom-up for Dock=Top) ────────────────────
             Controls.Add(split);
             Controls.Add(lblStatus);
-            Controls.Add(grpWc);
             Controls.Add(menuStrip);
 
             AcceptButton = btnQueryAvailable;
@@ -180,7 +171,7 @@ namespace ProductionApiTester
                 AllowUserToResizeRows = false,
                 SelectionMode         = DataGridViewSelectionMode.FullRowSelect,
                 MultiSelect           = false,
-                AutoSizeColumnsMode   = DataGridViewAutoSizeColumnsMode.AllCells,
+                AutoSizeColumnsMode   = DataGridViewAutoSizeColumnsMode.None,
                 RowHeadersVisible     = false,
                 BackgroundColor       = SystemColors.Window,
                 BorderStyle           = BorderStyle.None
@@ -197,8 +188,10 @@ namespace ProductionApiTester
             foreach (var name in visible)
             {
                 var col = AppSettings.AllColumns.FirstOrDefault(c => c.Name == name);
-                if (col.Name != null)
-                    AddCol(g, col.Name, col.Header);
+                if (col.Name == null) continue;
+                AddCol(g, col.Name, col.Header);
+                var widths = _settings?.ColumnWidths;
+                g.Columns[col.Name].Width = widths != null && widths.TryGetValue(name, out int w) ? w : 100;
             }
         }
 
@@ -217,31 +210,27 @@ namespace ProductionApiTester
 
         private void OnConnectionSettings(object sender, EventArgs e)
         {
-            using (var dlg = new ConfigDialog(_settings.Url, _settings.User, ""))
-            {
-                if (dlg.ShowDialog(this) != DialogResult.OK) return;
-                _settings.Url  = dlg.Url;
-                _settings.User = dlg.UserName;
-                _pass          = dlg.Password;
-                _settings.Save();
-                LoadWorkCenters();
-            }
+            var dlg = new ConfigDialog(_settings.Url, _settings.User, _settings.Password);
+            if (dlg.ShowDialog(this) != DialogResult.OK) return;
+            _settings.Url      = dlg.Url;
+            _settings.User     = dlg.UserName;
+            _settings.Password = dlg.Password;
+            _settings.Save();
+            LoadWorkCenters();
         }
 
         private void OnColumnSettings(object sender, EventArgs e)
         {
-            using (var dlg = new ColumnSettingsDialog(_settings.VisibleColumns))
-            {
-                if (dlg.ShowDialog(this) != DialogResult.OK) return;
-                _settings.VisibleColumns = dlg.VisibleColumns;
-                _settings.Save();
+            var dlg = new ColumnSettingsDialog(_settings.VisibleColumns);
+            if (dlg.ShowDialog(this) != DialogResult.OK) return;
+            _settings.VisibleColumns = dlg.VisibleColumns;
+            _settings.Save();
 
-                ApplyColumnSettings(gridAvailable);
-                ApplyColumnSettings(gridStarted);
+            ApplyColumnSettings(gridAvailable);
+            ApplyColumnSettings(gridStarted);
 
-                if (_resultsAvailable != null) PopulateGrid(gridAvailable, _resultsAvailable);
-                if (_resultsStarted   != null) PopulateGrid(gridStarted,   _resultsStarted);
-            }
+            if (_resultsAvailable != null) PopulateGrid(gridAvailable, _resultsAvailable);
+            if (_resultsStarted   != null) PopulateGrid(gridStarted,   _resultsStarted);
         }
 
         // ── Work center loading ───────────────────────────────────────────
@@ -252,11 +241,12 @@ namespace ProductionApiTester
 
             var url  = _settings.Url;
             var user = _settings.User;
-            var pass = _pass;
-            var previousSelection = cboWorkCenter.SelectedItem?.ToString() ?? cboWorkCenter.Tag?.ToString() ?? "";
+            var pass = _settings.Password;
+            var previousWorkCenter = _settings.WorkCenter;
 
             SetQueryingState(true);
-            lblStatus.Text = "Loading work centers...";
+            lblStatus.Text      = "Loading work centers...";
+            lblStatus.ForeColor = Color.DimGray;
 
             Task.Run(() =>
             {
@@ -269,38 +259,23 @@ namespace ProductionApiTester
 
                     Invoke((Action)(() =>
                     {
-                        // Suppress SelectedIndexChanged during list rebuild
-                        cboWorkCenter.SelectedIndexChanged -= OnWorkCenterSelectionChanged;
-                        cboWorkCenter.Items.Clear();
-                        foreach (var n in names) cboWorkCenter.Items.Add(n);
+                        RebuildWorkCenterMenu(names);
 
-                        if (!string.IsNullOrEmpty(previousSelection))
-                        {
-                            var idx = cboWorkCenter.FindStringExact(previousSelection);
-                            cboWorkCenter.SelectedIndex = idx >= 0 ? idx : (names.Count > 0 ? 0 : -1);
-                        }
-                        else if (names.Count > 0)
-                        {
-                            cboWorkCenter.SelectedIndex = 0;
-                        }
-
-                        cboWorkCenter.Tag = null;
-                        cboWorkCenter.SelectedIndexChanged += OnWorkCenterSelectionChanged;
+                        var toSelect = names.Contains(previousWorkCenter) ? previousWorkCenter
+                                     : names.Count > 0 ? names[0] : null;
 
                         SetQueryingState(false);
                         lblStatus.Text      = $"Loaded {names.Count} work center(s).";
                         lblStatus.ForeColor = Color.DarkGreen;
 
-                        // Auto-query both tabs after loading work centers
-                        if (cboWorkCenter.SelectedItem != null)
-                            ExecuteBothQueries();
+                        if (toSelect != null)
+                            SelectWorkCenter(toSelect, queryBoth: true);
                     }));
                 }
                 catch (Exception ex)
                 {
                     Invoke((Action)(() =>
                     {
-                        cboWorkCenter.SelectedIndexChanged += OnWorkCenterSelectionChanged;
                         SetQueryingState(false);
                         lblStatus.Text      = "Could not load work centers: " + ex.Message;
                         lblStatus.ForeColor = Color.OrangeRed;
@@ -309,17 +284,44 @@ namespace ProductionApiTester
             });
         }
 
+        private void RebuildWorkCenterMenu(List<string> names)
+        {
+            _menuWorkCenter.DropDownItems.Clear();
+
+            foreach (var name in names)
+            {
+                var item = new ToolStripMenuItem(name) { CheckOnClick = false };
+                item.Click += OnWorkCenterMenuItemClick;
+                _menuWorkCenter.DropDownItems.Add(item);
+            }
+
+            if (names.Count > 0)
+                _menuWorkCenter.DropDownItems.Add(new ToolStripSeparator());
+
+            _menuWorkCenter.DropDownItems.Add(new ToolStripMenuItem("Refresh", null, OnRefresh));
+        }
+
+        private void SelectWorkCenter(string name, bool queryBoth = false)
+        {
+            _settings.WorkCenter = name;
+
+            foreach (var item in _menuWorkCenter.DropDownItems.OfType<ToolStripMenuItem>())
+                item.Checked = item.Text == name;
+
+            if (queryBoth)
+                ExecuteBothQueries();
+        }
+
         // ── Query orchestration ───────────────────────────────────────────
 
-        private void OnWorkCenterSelectionChanged(object sender, EventArgs e)
+        private void OnWorkCenterMenuItemClick(object sender, EventArgs e)
         {
-            if (cboWorkCenter.SelectedItem == null || string.IsNullOrWhiteSpace(_settings?.Url)) return;
-            ExecuteBothQueries();
+            SelectWorkCenter(((ToolStripMenuItem)sender).Text, queryBoth: true);
         }
 
         private void OnRefresh(object sender, EventArgs e)
         {
-            if (cboWorkCenter.SelectedItem == null) return;
+            if (string.IsNullOrEmpty(_settings.WorkCenter)) return;
             ExecuteBothQueries();
         }
 
@@ -330,7 +332,7 @@ namespace ProductionApiTester
                 MessageBox.Show("Please configure the connection first (File > Connection Settings).", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
-            if (cboWorkCenter.SelectedItem == null)
+            if (string.IsNullOrEmpty(_settings.WorkCenter))
             {
                 MessageBox.Show("Please select a Work Center.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
@@ -340,7 +342,6 @@ namespace ProductionApiTester
 
         private void ExecuteBothQueries()
         {
-            _settings.WorkCenter = cboWorkCenter.SelectedItem.ToString();
             _settings.Save();
 
             SetQueryingState(true);
@@ -352,7 +353,7 @@ namespace ProductionApiTester
 
             var url        = _settings.Url;
             var user       = _settings.User;
-            var pass       = _pass;
+            var pass       = _settings.Password;
             var workCenter = _settings.WorkCenter;
             var orderNo    = txtOrderNo.Text.Trim();
             var batchId    = GetBatchId();
@@ -410,8 +411,8 @@ namespace ProductionApiTester
 
             var url        = _settings.Url;
             var user       = _settings.User;
-            var pass       = _pass;
-            var workCenter = cboWorkCenter.SelectedItem.ToString();
+            var pass       = _settings.Password;
+            var workCenter = _settings.WorkCenter;
             var orderNo    = txtOrderNo.Text.Trim();
             var batchId    = GetBatchId();
 
@@ -456,8 +457,7 @@ namespace ProductionApiTester
 
         private void SetQueryingState(bool querying)
         {
-            cboWorkCenter.Enabled     = !querying;
-            btnRefresh.Enabled        = !querying;
+            _menuWorkCenter.Enabled   = !querying;
             btnQueryAvailable.Enabled = !querying;
         }
 
@@ -512,6 +512,21 @@ namespace ProductionApiTester
 
             // TODO: call the start-work API with item
             MessageBox.Show($"Start work: {item.Barcode}", "Start Work", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
+        // ── Column width persistence ───────────────────────────────────────
+
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            if (_settings != null)
+            {
+                if (_settings.ColumnWidths == null)
+                    _settings.ColumnWidths = new Dictionary<string, int>();
+                foreach (DataGridViewColumn col in gridAvailable.Columns)
+                    _settings.ColumnWidths[col.Name] = col.Width;
+                _settings.Save();
+            }
+            base.OnFormClosing(e);
         }
     }
 }
