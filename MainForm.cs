@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Configuration;
 using System.Drawing;
 using System.Linq;
 using System.Threading.Tasks;
@@ -13,10 +12,7 @@ namespace ProductionApiTester
 {
     public class MainForm : Form
     {
-        // Connection settings (edited via ConfigDialog)
-        private string _url;
-        private string _user;
-        private string _pass;
+        private AppSettings _settings;
 
         // Query controls
         private ComboBox cboWorkCenter;
@@ -36,33 +32,62 @@ namespace ProductionApiTester
         private List<ProductionOrderData> _resultsAvailable;
         private List<ProductionOrderData> _resultsStarted;
 
+        // Maps column name → value getter; used by PopulateGrid
+        private static readonly Dictionary<string, Func<ProductionOrderData, object>> _getters =
+            new Dictionary<string, Func<ProductionOrderData, object>>
+            {
+                ["Barcode"]      = r => r.Barcode,
+                ["ShortInfo"]    = r => r.ShortInfo,
+                ["ProductId"]    = r => r.ProductId,
+                ["ModelId"]      = r => r.ModelId,
+                ["Quantity"]     = r => r.Quantity,
+                ["Status"]       = r => r.Status,
+                ["OrderNo"]      = r => r.Order?.OrderNo,
+                ["Customer"]     = r => r.Order?.Customer,
+                ["PlannedStart"] = r => r.PlannedStart?.ToString("yyyy-MM-dd"),
+                ["PlannedEnd"]   = r => r.PlannedEnd?.ToString("yyyy-MM-dd"),
+                ["RackId"]       = r => r.RackId,
+                ["BatchId"]      = r => r.BatchId,
+                ["ModelCode"]    = r => r.ModelCode,
+                ["FabricCode"]   = r => r.FabricCode,
+                ["SteeringCode"] = r => r.SteeringCode,
+                ["ProfileColor"] = r => r.ProfileColor,
+                ["Dimensions"]   = r => r.Dimensions,
+            };
+
         public MainForm()
         {
             BuildUI();
-            LoadSettings();
+            _settings = AppSettings.Load();
+            cboWorkCenter.Tag = _settings.WorkCenter;
 
-            if (!string.IsNullOrWhiteSpace(_url))
+            if (!string.IsNullOrWhiteSpace(_settings.Url))
                 LoadWorkCenters();
         }
 
         private void BuildUI()
         {
-            Text = "Production API Tester";
-            Size = new Size(1200, 800);
+            Text        = "Production API Tester";
+            Size        = new Size(1200, 800);
             MinimumSize = new Size(800, 600);
-            Font = new Font("Segoe UI", 9f);
+            Font        = new Font("Segoe UI", 9f);
 
             // ── Menu ──────────────────────────────────────────────────────
             var menuStrip    = new MenuStrip();
             var menuFile     = new ToolStripMenuItem("File");
+            var menuView     = new ToolStripMenuItem("View");
             var menuSettings = new ToolStripMenuItem("Connection Settings...", null, OnConnectionSettings);
             var menuExit     = new ToolStripMenuItem("Exit", null, (s, e) => Close());
+            var menuColumns  = new ToolStripMenuItem("Columns...", null, OnColumnSettings);
 
             menuFile.DropDownItems.Add(menuSettings);
             menuFile.DropDownItems.Add(new ToolStripSeparator());
             menuFile.DropDownItems.Add(menuExit);
-            menuStrip.Items.Add(menuFile);
 
+            menuView.DropDownItems.Add(menuColumns);
+
+            menuStrip.Items.Add(menuFile);
+            menuStrip.Items.Add(menuView);
             MainMenuStrip = menuStrip;
 
             // ── Query group ───────────────────────────────────────────────
@@ -137,93 +162,79 @@ namespace ProductionApiTester
         {
             var g = new DataGridView
             {
-                Dock = DockStyle.Fill,
-                ReadOnly = true,
-                AllowUserToAddRows = false,
+                Dock                  = DockStyle.Fill,
+                ReadOnly              = true,
+                AllowUserToAddRows    = false,
                 AllowUserToDeleteRows = false,
                 AllowUserToResizeRows = false,
-                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
-                MultiSelect = false,
-                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.AllCells,
-                RowHeadersVisible = false,
-                BackgroundColor = SystemColors.Window,
-                BorderStyle = BorderStyle.None
+                SelectionMode         = DataGridViewSelectionMode.FullRowSelect,
+                MultiSelect           = false,
+                AutoSizeColumnsMode   = DataGridViewAutoSizeColumnsMode.AllCells,
+                RowHeadersVisible     = false,
+                BackgroundColor       = SystemColors.Window,
+                BorderStyle           = BorderStyle.None
             };
-            AddColumns(g);
             return g;
         }
 
-        private static void AddColumns(DataGridView g)
+        // Rebuild the columns on a grid according to current settings
+        private void ApplyColumnSettings(DataGridView g)
         {
-            AddCol(g, "Barcode",      "Barcode");
-            AddCol(g, "ShortInfo",    "Description");
-            AddCol(g, "ProductId",    "Product ID");
-            AddCol(g, "ModelId",      "Model");
-            AddCol(g, "Quantity",     "Qty");
-            AddCol(g, "Status",       "Status");
-            AddCol(g, "OrderNo",      "Order No");
-            AddCol(g, "Customer",     "Customer");
-            AddCol(g, "PlannedStart", "Planned Start");
-            AddCol(g, "PlannedEnd",   "Planned End");
-            AddCol(g, "RackId",       "Rack");
-            AddCol(g, "BatchId",      "Batch");
-            AddCol(g, "ModelCode",    "Model Code");
-            AddCol(g, "FabricCode",   "Fabric Code");
-            AddCol(g, "SteeringCode", "Steering Code");
-            AddCol(g, "ProfileColor", "Profile Color");
-            AddCol(g, "Dimensions",   "Dimensions");
+            var visible = _settings.VisibleColumns
+                ?? AppSettings.AllColumns.Select(c => c.Name).ToList();
+
+            g.Columns.Clear();
+            foreach (var name in visible)
+            {
+                var col = AppSettings.AllColumns.FirstOrDefault(c => c.Name == name);
+                if (col.Name != null)
+                    AddCol(g, col.Name, col.Header);
+            }
         }
 
         private static void AddCol(DataGridView g, string name, string header)
         {
             g.Columns.Add(new DataGridViewTextBoxColumn
             {
-                Name = name,
-                HeaderText = header,
+                Name             = name,
+                HeaderText       = header,
                 DataPropertyName = name,
-                SortMode = DataGridViewColumnSortMode.Automatic
+                SortMode         = DataGridViewColumnSortMode.Automatic
             });
         }
 
         // ── Settings ──────────────────────────────────────────────────────
 
-        private void LoadSettings()
-        {
-            _url  = ConfigurationManager.AppSettings["Url"]  ?? "http://localhost:8486/";
-            _user = ConfigurationManager.AppSettings["User"] ?? "";
-            _pass = "";
-            cboWorkCenter.Tag = ConfigurationManager.AppSettings["WorkCenter"] ?? "";
-        }
-
-        private void SaveSettings()
-        {
-            var cfg = ConfigurationManager.OpenExeConfiguration(ConfigurationUserLevel.None);
-            SetOrAdd(cfg, "Url",        _url);
-            SetOrAdd(cfg, "User",       _user);
-            SetOrAdd(cfg, "WorkCenter", cboWorkCenter.SelectedItem?.ToString() ?? "");
-            // intentionally not saving password
-            cfg.Save(ConfigurationSaveMode.Modified);
-            ConfigurationManager.RefreshSection("appSettings");
-        }
-
-        private static void SetOrAdd(System.Configuration.Configuration cfg, string key, string value)
-        {
-            if (cfg.AppSettings.Settings[key] != null)
-                cfg.AppSettings.Settings[key].Value = value;
-            else
-                cfg.AppSettings.Settings.Add(key, value);
-        }
-
         private void OnConnectionSettings(object sender, EventArgs e)
         {
-            using (var dlg = new ConfigDialog(_url, _user, _pass))
+            using (var dlg = new ConfigDialog(_settings.Url, _settings.User, ""))
             {
                 if (dlg.ShowDialog(this) != DialogResult.OK) return;
-                _url  = dlg.Url;
-                _user = dlg.UserName;
+                _settings.Url  = dlg.Url;
+                _settings.User = dlg.UserName;
+                // Store password only in memory; never persisted
                 _pass = dlg.Password;
-                SaveSettings();
+                _settings.Save();
                 LoadWorkCenters();
+            }
+        }
+
+        // Password lives in memory only — not serialised to disk
+        private string _pass = "";
+
+        private void OnColumnSettings(object sender, EventArgs e)
+        {
+            using (var dlg = new ColumnSettingsDialog(_settings.VisibleColumns))
+            {
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                _settings.VisibleColumns = dlg.VisibleColumns;
+                _settings.Save();
+
+                ApplyColumnSettings(gridAvailable);
+                ApplyColumnSettings(gridStarted);
+
+                if (_resultsAvailable != null) PopulateGrid(gridAvailable, _resultsAvailable);
+                if (_resultsStarted   != null) PopulateGrid(gridStarted,   _resultsStarted);
             }
         }
 
@@ -231,22 +242,26 @@ namespace ProductionApiTester
 
         private void LoadWorkCenters()
         {
-            if (string.IsNullOrWhiteSpace(_url)) return;
+            if (string.IsNullOrWhiteSpace(_settings.Url)) return;
 
-            var url  = _url;
-            var user = _user;
+            var url  = _settings.Url;
+            var user = _settings.User;
             var pass = _pass;
             var previousSelection = cboWorkCenter.SelectedItem?.ToString() ?? cboWorkCenter.Tag?.ToString() ?? "";
 
+            // Apply column settings now that _settings is ready
+            ApplyColumnSettings(gridAvailable);
+            ApplyColumnSettings(gridStarted);
+
             cboWorkCenter.Enabled = false;
-            lblStatus.Text = "Loading work centers...";
-            lblStatus.ForeColor = Color.DimGray;
+            lblStatus.Text        = "Loading work centers...";
+            lblStatus.ForeColor   = Color.DimGray;
 
             Task.Run(() =>
             {
                 try
                 {
-                    var cc = new ConfiguratorClient { BaseUrl = url, UserName = user, Password = pass };
+                    var cc   = new ConfiguratorClient { BaseUrl = url, UserName = user, Password = pass };
                     var data = cc.GetProductionConfigurationData();
                     var names = (data.WorkCenters ?? Enumerable.Empty<WorkCenterInfo>())
                         .Select(w => w.Name)
@@ -269,10 +284,10 @@ namespace ProductionApiTester
                             cboWorkCenter.SelectedIndex = 0;
                         }
 
-                        cboWorkCenter.Tag = null;
+                        cboWorkCenter.Tag     = null;
                         cboWorkCenter.Enabled = true;
-                        lblStatus.Text = $"Loaded {names.Count} work center(s).";
-                        lblStatus.ForeColor = Color.DarkGreen;
+                        lblStatus.Text        = $"Loaded {names.Count} work center(s).";
+                        lblStatus.ForeColor   = Color.DarkGreen;
                     }));
                 }
                 catch (Exception ex)
@@ -280,8 +295,8 @@ namespace ProductionApiTester
                     Invoke((Action)(() =>
                     {
                         cboWorkCenter.Enabled = true;
-                        lblStatus.Text = "Could not load work centers: " + ex.Message;
-                        lblStatus.ForeColor = Color.OrangeRed;
+                        lblStatus.Text        = "Could not load work centers: " + ex.Message;
+                        lblStatus.ForeColor   = Color.OrangeRed;
                     }));
                 }
             });
@@ -291,7 +306,7 @@ namespace ProductionApiTester
 
         private void OnQuery(object sender, EventArgs e)
         {
-            if (string.IsNullOrWhiteSpace(_url))
+            if (string.IsNullOrWhiteSpace(_settings.Url))
             {
                 MessageBox.Show("Please configure the connection first (File > Connection Settings).", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
@@ -302,20 +317,22 @@ namespace ProductionApiTester
                 return;
             }
 
-            btnQuery.Enabled = false;
-            btnStartWork.Enabled = false;
-            lblStatus.Text = "Querying...";
-            lblStatus.ForeColor = Color.DimGray;
+            btnQuery.Enabled      = false;
+            btnStartWork.Enabled  = false;
+            lblStatus.Text        = "Querying...";
+            lblStatus.ForeColor   = Color.DimGray;
             gridAvailable.Rows.Clear();
             gridStarted.Rows.Clear();
             txtJson.Clear();
 
-            SaveSettings();
+            // Persist selected work center
+            _settings.WorkCenter = cboWorkCenter.SelectedItem.ToString();
+            _settings.Save();
 
-            var url        = _url;
-            var user       = _user;
+            var url        = _settings.Url;
+            var user       = _settings.User;
             var pass       = _pass;
-            var workCenter = cboWorkCenter.SelectedItem.ToString();
+            var workCenter = _settings.WorkCenter;
             var orderNo    = txtOrderNo.Text.Trim();
             int? batchId   = null;
             if (!string.IsNullOrWhiteSpace(txtBatchId.Text) && int.TryParse(txtBatchId.Text.Trim(), out int bid))
@@ -344,9 +361,9 @@ namespace ProductionApiTester
                     if (taskAvailable.IsFaulted || taskStarted.IsFaulted)
                     {
                         var ex = (taskAvailable.Exception ?? taskStarted.Exception).InnerException;
-                        lblStatus.Text = "Error: " + ex.Message;
+                        lblStatus.Text      = "Error: " + ex.Message;
                         lblStatus.ForeColor = Color.Red;
-                        txtJson.Text = ex.ToString();
+                        txtJson.Text        = ex.ToString();
                     }
                     else
                     {
@@ -354,7 +371,7 @@ namespace ProductionApiTester
                         _resultsStarted   = taskStarted.Result;
                         PopulateGrid(gridAvailable, _resultsAvailable);
                         PopulateGrid(gridStarted,   _resultsStarted);
-                        lblStatus.Text = $"{_resultsAvailable.Count} available, {_resultsStarted.Count} started.";
+                        lblStatus.Text      = $"{_resultsAvailable.Count} available, {_resultsStarted.Count} started.";
                         lblStatus.ForeColor = Color.DarkGreen;
                     }
                     btnQuery.Enabled = true;
@@ -367,25 +384,13 @@ namespace ProductionApiTester
             g.Rows.Clear();
             foreach (var r in results)
             {
-                g.Rows.Add(
-                    r.Barcode,
-                    r.ShortInfo,
-                    r.ProductId,
-                    r.ModelId,
-                    r.Quantity,
-                    r.Status,
-                    r.Order?.OrderNo,
-                    r.Order?.Customer,
-                    r.PlannedStart?.ToString("yyyy-MM-dd"),
-                    r.PlannedEnd?.ToString("yyyy-MM-dd"),
-                    r.RackId,
-                    r.BatchId,
-                    r.ModelCode,
-                    r.FabricCode,
-                    r.SteeringCode,
-                    r.ProfileColor,
-                    r.Dimensions
-                );
+                var values = new object[g.Columns.Count];
+                for (int i = 0; i < g.Columns.Count; i++)
+                {
+                    if (_getters.TryGetValue(g.Columns[i].Name, out var getter))
+                        values[i] = getter(r);
+                }
+                g.Rows.Add(values);
             }
         }
 
@@ -408,7 +413,7 @@ namespace ProductionApiTester
             txtJson.Text = JsonConvert.SerializeObject(results[idx], Formatting.Indented, new JsonSerializerSettings
             {
                 NullValueHandling = NullValueHandling.Ignore,
-                Converters = { new Newtonsoft.Json.Converters.StringEnumConverter() }
+                Converters        = { new Newtonsoft.Json.Converters.StringEnumConverter() }
             });
         }
 
