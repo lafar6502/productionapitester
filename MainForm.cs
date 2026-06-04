@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using Configurator.Interfaces.Client;
 using Configurator.Interfaces.WebApi.Production;
-using Newtonsoft.Json;
+
 
 namespace ProductionApiTester
 {
@@ -29,8 +29,8 @@ namespace ProductionApiTester
         private DataGridView gridStarted;
         private Button btnStartWork;
 
-        // JSON preview
-        private TextBox txtJson;
+        // Details pane
+        private WebBrowser _webProduct;
 
         private List<ProductionOrderData> _resultsAvailable;
         private List<ProductionOrderData> _resultsStarted;
@@ -100,8 +100,8 @@ namespace ProductionApiTester
             // ── Status label ──────────────────────────────────────────────
             lblStatus = new Label { Dock = DockStyle.Top, Height = 20, ForeColor = Color.DimGray, Text = "Ready.", Padding = new Padding(4, 2, 0, 0) };
 
-            // ── Splitter: tabs (top) + JSON (bottom) ──────────────────────
-            var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 420 };
+            // ── Splitter: tabs (left) + details (right) ──────────────────
+            var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Vertical, SplitterDistance = 700 };
 
             // ── Available tab ─────────────────────────────────────────────
             var pnlFilter = new FlowLayoutPanel
@@ -148,9 +148,11 @@ namespace ProductionApiTester
             tabs.TabPages.Add(tabStarted);
             split.Panel1.Controls.Add(tabs);
 
-            // ── JSON preview ──────────────────────────────────────────────
-            txtJson = new TextBox { Dock = DockStyle.Fill, Multiline = true, ScrollBars = ScrollBars.Both, ReadOnly = true, Font = new Font("Consolas", 9f), WordWrap = false };
-            split.Panel2.Controls.Add(txtJson);
+            // ── Details pane ──────────────────────────────────────────────
+            var grpProduct = new GroupBox { Text = "Product", Dock = DockStyle.Fill };
+            _webProduct = new WebBrowser { Dock = DockStyle.Fill, IsWebBrowserContextMenuEnabled = false, WebBrowserShortcutsEnabled = false };
+            grpProduct.Controls.Add(_webProduct);
+            split.Panel2.Controls.Add(grpProduct);
 
             // ── Assemble form (bottom-up for Dock=Top) ────────────────────
             Controls.Add(split);
@@ -347,7 +349,6 @@ namespace ProductionApiTester
             SetQueryingState(true);
             gridAvailable.Rows.Clear();
             gridStarted.Rows.Clear();
-            txtJson.Clear();
             lblStatus.Text      = "Querying...";
             lblStatus.ForeColor = Color.DimGray;
 
@@ -386,7 +387,6 @@ namespace ProductionApiTester
                         var ex = (taskAvailable.Exception ?? taskStarted.Exception).InnerException;
                         lblStatus.Text      = "Error: " + ex.Message;
                         lblStatus.ForeColor = Color.Red;
-                        txtJson.Text        = ex.ToString();
                     }
                     else
                     {
@@ -405,7 +405,6 @@ namespace ProductionApiTester
         {
             btnQueryAvailable.Enabled = false;
             gridAvailable.Rows.Clear();
-            txtJson.Clear();
             lblStatus.Text      = "Querying available orders...";
             lblStatus.ForeColor = Color.DimGray;
 
@@ -435,7 +434,6 @@ namespace ProductionApiTester
                         var ex = t.Exception.InnerException;
                         lblStatus.Text      = "Error: " + ex.Message;
                         lblStatus.ForeColor = Color.Red;
-                        txtJson.Text        = ex.ToString();
                     }
                     else
                     {
@@ -480,25 +478,21 @@ namespace ProductionApiTester
 
         private void OnAvailableSelectionChanged(object sender, EventArgs e)
         {
-            ShowJson(gridAvailable, _resultsAvailable);
+            ShowDetails(gridAvailable, _resultsAvailable);
             btnStartWork.Enabled = gridAvailable.SelectedRows.Count > 0;
         }
 
         private void OnStartedSelectionChanged(object sender, EventArgs e)
         {
-            ShowJson(gridStarted, _resultsStarted);
+            ShowDetails(gridStarted, _resultsStarted);
         }
 
-        private void ShowJson(DataGridView g, List<ProductionOrderData> results)
+        private void ShowDetails(DataGridView g, List<ProductionOrderData> results)
         {
-            if (results == null || g.SelectedRows.Count == 0) { txtJson.Clear(); return; }
+            if (results == null || g.SelectedRows.Count == 0) { _webProduct.DocumentText = ""; return; }
             var idx = g.SelectedRows[0].Index;
             if (idx < 0 || idx >= results.Count) return;
-            txtJson.Text = JsonConvert.SerializeObject(results[idx], Formatting.Indented, new JsonSerializerSettings
-            {
-                NullValueHandling = NullValueHandling.Ignore,
-                Converters        = { new Newtonsoft.Json.Converters.StringEnumConverter() }
-            });
+            _webProduct.DocumentText = results[idx].ProductHtml ?? "";
         }
 
         // ── Start Work ────────────────────────────────────────────────────
