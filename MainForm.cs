@@ -31,6 +31,9 @@ namespace ProductionApiTester
 
         // Details pane
         private WebBrowser _webProduct;
+        private Label _lblOrderNo;
+        private Label _lblLRef;
+        private Label _lblShortInfo;
 
         private List<ProductionOrderData> _resultsAvailable;
         private List<ProductionOrderData> _resultsStarted;
@@ -149,10 +152,53 @@ namespace ProductionApiTester
             split.Panel1.Controls.Add(tabs);
 
             // ── Details pane ──────────────────────────────────────────────
-            var grpProduct = new GroupBox { Text = "Product", Dock = DockStyle.Fill };
+            // Header: Order No, LRef, ShortInfo
+            var tblHeader = new TableLayoutPanel
+            {
+                Dock        = DockStyle.Top,
+                Height      = 54,
+                ColumnCount = 4,
+                RowCount    = 2,
+                Padding     = new Padding(6, 4, 6, 2)
+            };
+            tblHeader.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            tblHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            tblHeader.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            tblHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            tblHeader.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+            tblHeader.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+            var boldFont = new Font("Segoe UI", 9f, FontStyle.Bold);
+            _lblOrderNo   = new Label { Dock = DockStyle.Fill, Font = boldFont };
+            _lblLRef      = new Label { Dock = DockStyle.Fill, Font = boldFont };
+            _lblShortInfo = new Label { Dock = DockStyle.Fill };
+
+            tblHeader.Controls.Add(new Label { Text = "Order No:", AutoSize = true, Anchor = AnchorStyles.Left | AnchorStyles.Top }, 0, 0);
+            tblHeader.Controls.Add(_lblOrderNo, 1, 0);
+            tblHeader.Controls.Add(new Label { Text = "LRef:", AutoSize = true, Anchor = AnchorStyles.Left | AnchorStyles.Top }, 2, 0);
+            tblHeader.Controls.Add(_lblLRef, 3, 0);
+            tblHeader.Controls.Add(_lblShortInfo, 0, 1);
+            tblHeader.SetColumnSpan(_lblShortInfo, 4);
+
+            // Detail tabs
             _webProduct = new WebBrowser { Dock = DockStyle.Fill, IsWebBrowserContextMenuEnabled = false, WebBrowserShortcutsEnabled = false };
-            grpProduct.Controls.Add(_webProduct);
-            split.Panel2.Controls.Add(grpProduct);
+
+            var tabProductHtml = new TabPage { Text = "Product HTML" };
+            tabProductHtml.Controls.Add(_webProduct);
+
+            var tabBom   = new TabPage { Text = "BOM" };
+            var tabOther = new TabPage { Text = "Other" };
+
+            var detailTabs = new TabControl { Dock = DockStyle.Fill };
+            detailTabs.TabPages.Add(tabProductHtml);
+            detailTabs.TabPages.Add(tabBom);
+            detailTabs.TabPages.Add(tabOther);
+
+            var pnlDetails = new Panel { Dock = DockStyle.Fill };
+            pnlDetails.Controls.Add(detailTabs);  // Fill
+            pnlDetails.Controls.Add(tblHeader);   // Top (added last → sits at top)
+
+            split.Panel2.Controls.Add(pnlDetails);
 
             // ── Assemble form (bottom-up for Dock=Top) ────────────────────
             Controls.Add(split);
@@ -489,10 +535,19 @@ namespace ProductionApiTester
 
         private void ShowDetails(DataGridView g, List<ProductionOrderData> results)
         {
-            if (results == null || g.SelectedRows.Count == 0) { _webProduct.DocumentText = ""; return; }
+            if (results == null || g.SelectedRows.Count == 0)
+            {
+                _lblOrderNo.Text = _lblLRef.Text = _lblShortInfo.Text = "";
+                _webProduct.DocumentText = "";
+                return;
+            }
             var idx = g.SelectedRows[0].Index;
             if (idx < 0 || idx >= results.Count) return;
-            _webProduct.DocumentText = results[idx].ProductHtml ?? "";
+            var item = results[idx];
+            _lblOrderNo.Text         = item.Order?.OrderNo ?? "";
+            _lblLRef.Text            = item.LRef ?? "";
+            _lblShortInfo.Text       = item.ShortInfo ?? "";
+            _webProduct.DocumentText = item.ProductHtml ?? "";
         }
 
         // ── Start Work ────────────────────────────────────────────────────
