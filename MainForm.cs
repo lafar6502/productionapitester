@@ -3,20 +3,20 @@ using System.Collections.Generic;
 using System.Configuration;
 using System.Drawing;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using Configurator.Interfaces.Client;
 using Configurator.Interfaces.WebApi.Production;
-using System.Threading.Tasks;
 using Newtonsoft.Json;
 
 namespace ProductionApiTester
 {
     public class MainForm : Form
     {
-        // Connection controls
-        private TextBox txtUrl;
-        private TextBox txtUser;
-        private TextBox txtPass;
+        // Connection settings (edited via ConfigDialog)
+        private string _url;
+        private string _user;
+        private string _pass;
 
         // Query controls
         private ComboBox cboWorkCenter;
@@ -36,15 +36,13 @@ namespace ProductionApiTester
         private List<ProductionOrderData> _resultsAvailable;
         private List<ProductionOrderData> _resultsStarted;
 
-        private Timer _reloadTimer;
-
         public MainForm()
         {
             BuildUI();
             LoadSettings();
 
-            if (!string.IsNullOrWhiteSpace(txtUrl.Text))
-                ScheduleWorkCenterReload();
+            if (!string.IsNullOrWhiteSpace(_url))
+                LoadWorkCenters();
         }
 
         private void BuildUI()
@@ -54,29 +52,18 @@ namespace ProductionApiTester
             MinimumSize = new Size(800, 600);
             Font = new Font("Segoe UI", 9f);
 
-            _reloadTimer = new Timer { Interval = 800 };
-            _reloadTimer.Tick += (s, e) => { _reloadTimer.Stop(); LoadWorkCenters(); };
+            // ── Menu ──────────────────────────────────────────────────────
+            var menuStrip    = new MenuStrip();
+            var menuFile     = new ToolStripMenuItem("File");
+            var menuSettings = new ToolStripMenuItem("Connection Settings...", null, OnConnectionSettings);
+            var menuExit     = new ToolStripMenuItem("Exit", null, (s, e) => Close());
 
-            // ── Connection group ──────────────────────────────────────────
-            var grpConn = new GroupBox { Text = "Connection", Dock = DockStyle.Top, Height = 60, Padding = new Padding(6, 2, 6, 2) };
-            var pnlConn = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, AutoSize = true };
+            menuFile.DropDownItems.Add(menuSettings);
+            menuFile.DropDownItems.Add(new ToolStripSeparator());
+            menuFile.DropDownItems.Add(menuExit);
+            menuStrip.Items.Add(menuFile);
 
-            pnlConn.Controls.Add(new Label { Text = "URL:", AutoSize = true, Margin = new Padding(0, 6, 2, 0) });
-            txtUrl = new TextBox { Width = 340, Margin = new Padding(0, 4, 10, 0) };
-            txtUrl.TextChanged += OnConnectionFieldChanged;
-            pnlConn.Controls.Add(txtUrl);
-
-            pnlConn.Controls.Add(new Label { Text = "User:", AutoSize = true, Margin = new Padding(0, 6, 2, 0) });
-            txtUser = new TextBox { Width = 120, Margin = new Padding(0, 4, 10, 0) };
-            txtUser.TextChanged += OnConnectionFieldChanged;
-            pnlConn.Controls.Add(txtUser);
-
-            pnlConn.Controls.Add(new Label { Text = "Password:", AutoSize = true, Margin = new Padding(0, 6, 2, 0) });
-            txtPass = new TextBox { Width = 120, PasswordChar = '*', Margin = new Padding(0, 4, 0, 0) };
-            txtPass.TextChanged += OnConnectionFieldChanged;
-            pnlConn.Controls.Add(txtPass);
-
-            grpConn.Controls.Add(pnlConn);
+            MainMenuStrip = menuStrip;
 
             // ── Query group ───────────────────────────────────────────────
             var grpQuery = new GroupBox { Text = "Query", Dock = DockStyle.Top, Height = 60, Padding = new Padding(6, 2, 6, 2) };
@@ -141,7 +128,7 @@ namespace ProductionApiTester
             Controls.Add(split);
             Controls.Add(lblStatus);
             Controls.Add(grpQuery);
-            Controls.Add(grpConn);
+            Controls.Add(menuStrip);
 
             AcceptButton = btnQuery;
         }
@@ -168,23 +155,23 @@ namespace ProductionApiTester
 
         private static void AddColumns(DataGridView g)
         {
-            AddCol(g, "Barcode",       "Barcode");
-            AddCol(g, "ShortInfo",     "Description");
-            AddCol(g, "ProductId",     "Product ID");
-            AddCol(g, "ModelId",       "Model");
-            AddCol(g, "Quantity",      "Qty");
-            AddCol(g, "Status",        "Status");
-            AddCol(g, "OrderNo",       "Order No");
-            AddCol(g, "Customer",      "Customer");
-            AddCol(g, "PlannedStart",  "Planned Start");
-            AddCol(g, "PlannedEnd",    "Planned End");
-            AddCol(g, "RackId",        "Rack");
-            AddCol(g, "BatchId",       "Batch");
-            AddCol(g, "ModelCode",     "Model Code");
-            AddCol(g, "FabricCode",    "Fabric Code");
-            AddCol(g, "SteeringCode",  "Steering Code");
-            AddCol(g, "ProfileColor",  "Profile Color");
-            AddCol(g, "Dimensions",    "Dimensions");
+            AddCol(g, "Barcode",      "Barcode");
+            AddCol(g, "ShortInfo",    "Description");
+            AddCol(g, "ProductId",    "Product ID");
+            AddCol(g, "ModelId",      "Model");
+            AddCol(g, "Quantity",     "Qty");
+            AddCol(g, "Status",       "Status");
+            AddCol(g, "OrderNo",      "Order No");
+            AddCol(g, "Customer",     "Customer");
+            AddCol(g, "PlannedStart", "Planned Start");
+            AddCol(g, "PlannedEnd",   "Planned End");
+            AddCol(g, "RackId",       "Rack");
+            AddCol(g, "BatchId",      "Batch");
+            AddCol(g, "ModelCode",    "Model Code");
+            AddCol(g, "FabricCode",   "Fabric Code");
+            AddCol(g, "SteeringCode", "Steering Code");
+            AddCol(g, "ProfileColor", "Profile Color");
+            AddCol(g, "Dimensions",   "Dimensions");
         }
 
         private static void AddCol(DataGridView g, string name, string header)
@@ -198,19 +185,21 @@ namespace ProductionApiTester
             });
         }
 
+        // ── Settings ──────────────────────────────────────────────────────
+
         private void LoadSettings()
         {
-            txtUrl.Text  = ConfigurationManager.AppSettings["Url"]  ?? "http://localhost:8486/";
-            txtUser.Text = ConfigurationManager.AppSettings["User"] ?? "";
-            txtPass.Text = ConfigurationManager.AppSettings["Pass"] ?? "";
+            _url  = ConfigurationManager.AppSettings["Url"]  ?? "http://localhost:8486/";
+            _user = ConfigurationManager.AppSettings["User"] ?? "";
+            _pass = "";
             cboWorkCenter.Tag = ConfigurationManager.AppSettings["WorkCenter"] ?? "";
         }
 
         private void SaveSettings()
         {
             var cfg = ConfigurationManager.OpenExeConfiguration(ConfigurationUserLevel.None);
-            SetOrAdd(cfg, "Url",        txtUrl.Text);
-            SetOrAdd(cfg, "User",       txtUser.Text);
+            SetOrAdd(cfg, "Url",        _url);
+            SetOrAdd(cfg, "User",       _user);
             SetOrAdd(cfg, "WorkCenter", cboWorkCenter.SelectedItem?.ToString() ?? "");
             // intentionally not saving password
             cfg.Save(ConfigurationSaveMode.Modified);
@@ -225,23 +214,28 @@ namespace ProductionApiTester
                 cfg.AppSettings.Settings.Add(key, value);
         }
 
-        // ── Work center loading ───────────────────────────────────────────
-
-        private void OnConnectionFieldChanged(object sender, EventArgs e) => ScheduleWorkCenterReload();
-
-        private void ScheduleWorkCenterReload()
+        private void OnConnectionSettings(object sender, EventArgs e)
         {
-            _reloadTimer.Stop();
-            _reloadTimer.Start();
+            using (var dlg = new ConfigDialog(_url, _user, _pass))
+            {
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                _url  = dlg.Url;
+                _user = dlg.UserName;
+                _pass = dlg.Password;
+                SaveSettings();
+                LoadWorkCenters();
+            }
         }
+
+        // ── Work center loading ───────────────────────────────────────────
 
         private void LoadWorkCenters()
         {
-            var url = txtUrl.Text.Trim();
-            if (string.IsNullOrWhiteSpace(url)) return;
+            if (string.IsNullOrWhiteSpace(_url)) return;
 
-            var user = txtUser.Text.Trim();
-            var pass = txtPass.Text;
+            var url  = _url;
+            var user = _user;
+            var pass = _pass;
             var previousSelection = cboWorkCenter.SelectedItem?.ToString() ?? cboWorkCenter.Tag?.ToString() ?? "";
 
             cboWorkCenter.Enabled = false;
@@ -297,9 +291,9 @@ namespace ProductionApiTester
 
         private void OnQuery(object sender, EventArgs e)
         {
-            if (string.IsNullOrWhiteSpace(txtUrl.Text))
+            if (string.IsNullOrWhiteSpace(_url))
             {
-                MessageBox.Show("Please enter the server URL.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show("Please configure the connection first (File > Connection Settings).", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
             if (cboWorkCenter.SelectedItem == null)
@@ -318,9 +312,9 @@ namespace ProductionApiTester
 
             SaveSettings();
 
-            var url        = txtUrl.Text.Trim();
-            var user       = txtUser.Text.Trim();
-            var pass       = txtPass.Text;
+            var url        = _url;
+            var user       = _user;
+            var pass       = _pass;
             var workCenter = cboWorkCenter.SelectedItem.ToString();
             var orderNo    = txtOrderNo.Text.Trim();
             int? batchId   = null;
